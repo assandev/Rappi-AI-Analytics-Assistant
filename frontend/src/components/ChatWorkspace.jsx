@@ -26,7 +26,7 @@ function AssistantBubble({ text }) {
   );
 }
 
-function InputBar({ onSubmitQuestion, isSubmitting, onGenerateInsights, isGeneratingInsights }) {
+function InputBar({ onSubmitQuestion, isSubmitting }) {
   const [input, setInput] = useState("");
 
   const submit = () => {
@@ -63,14 +63,6 @@ function InputBar({ onSubmitQuestion, isSubmitting, onGenerateInsights, isGenera
         />
         <button
           type="button"
-          onClick={onGenerateInsights}
-          disabled={isGeneratingInsights || isSubmitting}
-          className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-surfaceContainerHigh px-4 font-heading text-[14px] font-bold text-onSurface"
-        >
-          {isGeneratingInsights ? "Generating..." : "Generate Insights"}
-        </button>
-        <button
-          type="button"
           onClick={submit}
           disabled={isSubmitting}
           className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-gradient-to-r from-primary to-primaryContainer px-4 font-heading text-[15px] font-bold text-white"
@@ -88,8 +80,6 @@ export function ChatWorkspace({
   onSubmitQuestion,
   isSubmitting,
   errorText,
-  onGenerateInsights,
-  isGeneratingInsights,
 }) {
   return (
     <section className="flex h-full flex-col bg-surface">
@@ -116,8 +106,6 @@ export function ChatWorkspace({
       <InputBar
         onSubmitQuestion={onSubmitQuestion}
         isSubmitting={isSubmitting}
-        onGenerateInsights={onGenerateInsights}
-        isGeneratingInsights={isGeneratingInsights}
       />
 
       <p className="pb-2 text-center text-[10px] tracking-[0.08em] text-onSurfaceVariant/65">

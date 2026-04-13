@@ -75,17 +75,25 @@ def _is_noisy_anomaly(insight: dict[str, Any]) -> bool:
     if insight.get("category") != "anomalies":
         return False
 
+    confidence = _normalize_text(insight.get("confidence") or insight.get("evidence", {}).get("confidence"))
+    if confidence == "low":
+        return True
+
     evidence = insight.get("evidence", {})
-    baseline = abs(_to_float(evidence.get("week_1_value"), 0.0))
-    current = _to_float(evidence.get("week_0_value"), 0.0)
-    change_pct = abs(_to_float(evidence.get("pct_change"), 0.0))
-    abs_change = abs(current - _to_float(evidence.get("week_1_value"), 0.0))
+    previous = _to_float(evidence.get("previous_value", evidence.get("week_1_value")), 0.0)
+    current = _to_float(evidence.get("current_value", evidence.get("week_0_value")), 0.0)
+    baseline = abs(_to_float(evidence.get("baseline_abs"), abs(previous)))
+    change_pct = abs(_to_float(evidence.get("wow_change_pct", evidence.get("pct_change")), 0.0))
+    abs_change = abs(_to_float(evidence.get("abs_delta"), current - previous))
+    sign_flip = bool(evidence.get("sign_flip", False))
 
     if baseline < 0.05 and abs_change < 0.05:
         return True
     if change_pct > 5.0 and abs_change < 0.2:
         return True
     if abs_change < 0.01:
+        return True
+    if sign_flip and abs_change < 0.2:
         return True
     return False
 
@@ -270,4 +278,3 @@ def curate_insights(
         },
         "curated_insights": deduped_ranked,
     }
-

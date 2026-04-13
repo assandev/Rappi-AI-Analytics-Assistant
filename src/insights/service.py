@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import smtplib
@@ -10,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.insights import run_insight_engine
@@ -19,6 +22,7 @@ from src.insights.report_generator import generate_markdown_report, save_markdow
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "reports" / "insights_report.md"
+DEFAULT_REPORT_META_PATH = PROJECT_ROOT / "reports" / "insights_report.meta.json"
 DEFAULT_EMAIL_SUBJECT = "Rappi Ops AI - Executive Insights Report"
 DEFAULT_EMAIL_BODY = (
     "Hi,\n\n"
@@ -27,6 +31,72 @@ DEFAULT_EMAIL_BODY = (
     "Rappi Ops AI"
 )
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Always load env from project root so SMTP/LLM vars are available
+# even when commands are launched from a different working directory.
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _resolve_output_path(path: str | Path | None, default: Path) -> Path:
+    resolved = Path(path) if path else default
+    if not resolved.is_absolute():
+        resolved = PROJECT_ROOT / resolved
+    return resolved
+
+
+def _fingerprint_dataframe(df: pd.DataFrame) -> str:
+    """Build stable fingerprint from dataframe structure and values."""
+    structure = "|".join(f"{column}:{str(df[column].dtype)}" for column in df.columns).encode("utf-8")
+    values_hash = pd.util.hash_pandas_object(df, index=True).values.tobytes()
+    digest = hashlib.sha256(structure + values_hash).hexdigest()
+    return digest
+
+
+def _build_cache_key(
+    datasets: dict[str, pd.DataFrame],
+    top_k_critical: int,
+    force_fallback: bool,
+) -> dict[str, Any]:
+    return {
+        "metrics_fingerprint": _fingerprint_dataframe(datasets["metrics_long"]),
+        "orders_fingerprint": _fingerprint_dataframe(datasets["orders_long"]),
+        "top_k_critical": int(top_k_critical),
+        "force_fallback": bool(force_fallback),
+        "report_schema_version": 2,
+    }
+
+
+def _load_cached_report(
+    report_path: Path,
+    meta_path: Path,
+    cache_key: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return cached report if cache key matches current inputs."""
+    if not report_path.exists() or not meta_path.exists():
+        return None
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    if meta.get("cache_key") != cache_key:
+        return None
+
+    cached_result = dict(meta.get("result") or {})
+    markdown = report_path.read_text(encoding="utf-8")
+    cached_result["markdown"] = markdown
+    cached_result["output_path"] = str(report_path)
+    cached_result["cached"] = True
+    return cached_result
+
+
+def _save_report_meta(meta_path: Path, cache_key: dict[str, Any], result: dict[str, Any]) -> None:
+    """Persist report cache metadata used for fast reuse."""
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    result_without_markdown = {k: v for k, v in result.items() if k != "markdown"}
+    payload = {"cache_key": cache_key, "result": result_without_markdown}
+    meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
 def load_processed_datasets() -> dict[str, pd.DataFrame]:
@@ -77,22 +147,29 @@ def generate_and_save_insights_report(
     *,
     datasets: dict[str, pd.DataFrame] | None = None,
     output_path: str | Path | None = None,
+    meta_path: str | Path | None = None,
     top_k_critical: int = 5,
     force_fallback: bool = False,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     """Generate insights markdown and save it to disk."""
     datasets_to_use = datasets if datasets is not None else load_processed_datasets()
     bounded_top_k = min(5, max(3, int(top_k_critical)))
+    final_output_path = _resolve_output_path(output_path, DEFAULT_REPORT_PATH)
+    final_meta_path = _resolve_output_path(meta_path, DEFAULT_REPORT_META_PATH)
+    cache_key = _build_cache_key(datasets_to_use, bounded_top_k, force_fallback)
+
+    if use_cache:
+        cached = _load_cached_report(final_output_path, final_meta_path, cache_key)
+        if cached is not None:
+            return cached
+
     payload = run_insight_engine(datasets_to_use, top_k_critical=bounded_top_k)
     llm_callable = None if force_fallback else build_insights_llm_callable()
     markdown = generate_markdown_report(payload, llm_callable=llm_callable)
-
-    final_output_path = Path(output_path) if output_path else DEFAULT_REPORT_PATH
-    if not final_output_path.is_absolute():
-        final_output_path = PROJECT_ROOT / final_output_path
     saved_path = save_markdown_report(markdown, final_output_path)
 
-    return {
+    result = {
         "markdown": markdown,
         "output_path": str(saved_path),
         "insight_count": payload["insight_count"],
@@ -103,7 +180,10 @@ def generate_and_save_insights_report(
             category: len(items) for category, items in payload["insights_by_category"].items()
         },
         "curation_metadata": payload["curation_metadata"],
+        "cached": False,
     }
+    _save_report_meta(final_meta_path, cache_key, result)
+    return result
 
 
 def _validate_email(value: str) -> str:

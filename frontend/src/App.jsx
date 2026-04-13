@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { ExecutionPanel } from "./components/ExecutionPanel";
-import { InsightsReportModal } from "./components/InsightsReportModal";
+import { InsightsGeneratorPage } from "./components/InsightsGeneratorPage";
 import {
   generateInsightsReport,
   getInsightsReportDownloadUrl,
@@ -43,6 +43,7 @@ const DEFAULT_PIPELINE = [
 ];
 
 export default function App() {
+  const [activeView, setActiveView] = useState("assistant");
   const [messages, setMessages] = useState(() => [
     {
       id: "ai-welcome",
@@ -55,9 +56,9 @@ export default function App() {
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [isSendingInsightsEmail, setIsSendingInsightsEmail] = useState(false);
   const [insightsReport, setInsightsReport] = useState(null);
-  const [isInsightsModalOpen, setIsInsightsModalOpen] = useState(false);
   const [insightsEmailStatus, setInsightsEmailStatus] = useState("");
-  const [errorText, setErrorText] = useState("");
+  const [chatErrorText, setChatErrorText] = useState("");
+  const [insightsErrorText, setInsightsErrorText] = useState("");
 
   const systemStatus = useMemo(
     () => ({
@@ -72,7 +73,7 @@ export default function App() {
       return;
     }
 
-    setErrorText("");
+    setChatErrorText("");
     setIsSubmitting(true);
     setMessages((previous) => [...previous, { id: crypto.randomUUID(), role: "user", text: question }]);
     setPipelineSteps((previous) =>
@@ -98,11 +99,11 @@ export default function App() {
         ]);
       }
       if (response.error) {
-        setErrorText(response.error);
+        setChatErrorText(response.error);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to reach backend.";
-      setErrorText(message);
+      setChatErrorText(message);
       setPipelineSteps((previous) =>
         previous.map((step) =>
           step.status === "running" || step.status === "not_started"
@@ -115,25 +116,23 @@ export default function App() {
     }
   };
 
-  const handleGenerateInsights = async () => {
-    setErrorText("");
+  const handleGenerateInsights = async (forceRegenerate = false) => {
+    setInsightsErrorText("");
     setInsightsEmailStatus("");
     setIsGeneratingInsights(true);
     try {
-      const result = await generateInsightsReport({ top_k_critical: 5, force_fallback: false });
+      const result = await generateInsightsReport({
+        top_k_critical: 5,
+        force_fallback: false,
+        force_regenerate: forceRegenerate,
+      });
       setInsightsReport(result);
-      setIsInsightsModalOpen(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to generate insights report.";
-      setErrorText(message);
+      setInsightsErrorText(message);
     } finally {
       setIsGeneratingInsights(false);
     }
-  };
-
-  const closeInsightsModal = () => {
-    setIsInsightsModalOpen(false);
-    setInsightsEmailStatus("");
   };
 
   const handleSendInsightsEmail = async (recipientEmail) => {
@@ -162,30 +161,32 @@ export default function App() {
     <div className="min-h-screen bg-surface text-onSurface">
       <div className="h-screen w-screen overflow-auto">
         <div className="origin-top-left scale-[0.8]" style={{ width: "125%", minHeight: "125%" }}>
-          <TopBar />
+          <TopBar activeView={activeView} onChangeView={setActiveView} />
 
-          <main className="mx-auto grid h-[calc(100vh-64px)] max-w-[1700px] grid-cols-1 lg:grid-cols-[1fr_348px]">
-            <ChatWorkspace
-              messages={messages}
-              onSubmitQuestion={handleSubmitQuestion}
-              isSubmitting={isSubmitting}
-              onGenerateInsights={handleGenerateInsights}
+          {activeView === "assistant" ? (
+            <main className="mx-auto grid h-[calc(100vh-64px)] max-w-[1700px] grid-cols-1 lg:grid-cols-[1fr_348px]">
+              <ChatWorkspace
+                messages={messages}
+                onSubmitQuestion={handleSubmitQuestion}
+                isSubmitting={isSubmitting}
+                errorText={chatErrorText}
+              />
+              <ExecutionPanel steps={pipelineSteps} isSubmitting={isSubmitting} systemStatus={systemStatus} />
+            </main>
+          ) : (
+            <InsightsGeneratorPage
+              report={insightsReport}
               isGeneratingInsights={isGeneratingInsights}
-              errorText={errorText}
+              onGenerateInsights={handleGenerateInsights}
+              onSendEmail={handleSendInsightsEmail}
+              isSendingEmail={isSendingInsightsEmail}
+              emailStatus={insightsEmailStatus}
+              errorText={insightsErrorText}
+              downloadUrl={getInsightsReportDownloadUrl()}
             />
-            <ExecutionPanel steps={pipelineSteps} isSubmitting={isSubmitting} systemStatus={systemStatus} />
-          </main>
+          )}
         </div>
       </div>
-      <InsightsReportModal
-        open={isInsightsModalOpen}
-        report={insightsReport}
-        onClose={closeInsightsModal}
-        downloadUrl={getInsightsReportDownloadUrl()}
-        onSendEmail={handleSendInsightsEmail}
-        isSendingEmail={isSendingInsightsEmail}
-        emailStatus={insightsEmailStatus}
-      />
     </div>
   );
 }

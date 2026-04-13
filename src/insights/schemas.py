@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 
 InsightCategory = Literal[
@@ -28,6 +28,7 @@ class InsightItem(TypedDict):
     summary: str
     evidence: dict[str, Any]
     recommendation_hint: str
+    confidence: NotRequired[Literal["high", "medium", "low"]]
 
 
 class InsightPayload(TypedDict):
@@ -53,10 +54,11 @@ def make_insight(
     summary: str,
     evidence: dict[str, Any],
     recommendation_hint: str,
+    confidence: Literal["high", "medium", "low"] | None = None,
 ) -> InsightItem:
     """Create a normalized insight item with safe score ranges."""
     bounded_severity = float(max(0.0, min(100.0, severity_score)))
-    return {
+    item: InsightItem = {
         "category": category,
         "title": title,
         "metric": metric,
@@ -69,3 +71,6 @@ def make_insight(
         "evidence": evidence,
         "recommendation_hint": recommendation_hint,
     }
+    if confidence:
+        item["confidence"] = confidence
+    return item

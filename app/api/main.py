@@ -28,18 +28,19 @@ from src.conversation import (
 )
 from src.insights.service import (
     DEFAULT_REPORT_PATH,
+    DEFAULT_REPORT_META_PATH,
     generate_and_save_insights_report,
     send_insights_report_email,
 )
 from src.response.response_formatter import format_response_with_llm
 
-
-load_dotenv()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 logger = logging.getLogger("uvicorn.error")
+
+# Load env from project root explicitly for stable local/dev behavior.
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class QueryRequest(BaseModel):
@@ -54,6 +55,7 @@ class InsightsReportRequest(BaseModel):
 
     top_k_critical: int = Field(default=5, ge=3, le=5)
     force_fallback: bool = False
+    force_regenerate: bool = False
 
 
 class InsightsReportEmailRequest(BaseModel):
@@ -120,6 +122,23 @@ def _build_formatter_llm_callable() -> Callable[..., str]:
     return _llm_callable
 
 
+def _clear_insights_report_artifacts(trigger: str) -> None:
+    """Delete report/cache artifacts so demo always regenerates with LLM."""
+    targets = [DEFAULT_REPORT_PATH, DEFAULT_REPORT_META_PATH]
+    for target in targets:
+        try:
+            if target.exists():
+                target.unlink()
+                logger.info("[insights.cleanup] trigger=%s removed=%s", trigger, target)
+        except OSError as exc:
+            logger.warning(
+                "[insights.cleanup] trigger=%s failed path=%s error=%s",
+                trigger,
+                target,
+                exc,
+            )
+
+
 def _load_datasets() -> dict[str, pd.DataFrame]:
     """Load processed CSVs required by deterministic executor."""
     metrics_path = PROCESSED_DIR / "metrics_long.csv"
@@ -150,6 +169,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event() -> None:
     """Warm-load datasets and LLM callable once."""
+    _clear_insights_report_artifacts(trigger="startup")
     app.state.datasets = _load_datasets()
     app.state.llm_callable = _build_formatter_llm_callable()
     app.state.conversation_state = ConversationState()
@@ -162,6 +182,12 @@ def startup_event() -> None:
     )
     logger.info("[startup] conversation state initialized")
     logger.info("[startup] frontend_dist_exists=%s", FRONTEND_DIST.exists())
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    """Clear generated report artifacts when app stops (demo-friendly)."""
+    _clear_insights_report_artifacts(trigger="shutdown")
 
 
 @app.middleware("http")
@@ -400,11 +426,13 @@ def generate_insights_report(payload: InsightsReportRequest, request: Request) -
             output_path=DEFAULT_REPORT_PATH,
             top_k_critical=payload.top_k_critical,
             force_fallback=payload.force_fallback,
+            use_cache=not payload.force_regenerate,
         )
         logger.info(
-            "[req:%s][insights.generate] done insight_count=%s output_path=%s duration_s=%.3f",
+            "[req:%s][insights.generate] done insight_count=%s cached=%s output_path=%s duration_s=%.3f",
             request_id,
             result["insight_count"],
+            result.get("cached", False),
             result["output_path"],
             time.perf_counter() - started,
         )
@@ -415,6 +443,7 @@ def generate_insights_report(payload: InsightsReportRequest, request: Request) -
             "insight_count": result["insight_count"],
             "top_critical_titles": result["top_critical_titles"],
             "generated_at": result["generated_at"],
+            "cached": result.get("cached", False),
             "duration_s": round(time.perf_counter() - started, 3),
         }
     except Exception as exc:
