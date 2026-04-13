@@ -95,7 +95,12 @@ export default function App() {
       if (response.answer) {
         setMessages((previous) => [
           ...previous,
-          { id: crypto.randomUUID(), role: "assistant", text: response.answer },
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text: response.answer,
+            suggestions: Array.isArray(response.suggestions) ? response.suggestions : [],
+          },
         ]);
       }
       if (response.error) {

@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.services.execution import execute_query
 from app.services.query_parser import parse_question_to_json
 from app.services.query_validator import validate_parsed_query
+from src.assistant import enrich_question_with_business_context, generate_suggestions
 from src.conversation import ConversationState, build_contextual_parser_input, is_follow_up_question
 from src.response.response_formatter import compact_execution_result, format_response_with_llm
 
@@ -90,26 +91,47 @@ def run_single_test(
     print(question)
 
     try:
-        follow_up_detected = is_follow_up_question(question)
-        parser_input = build_contextual_parser_input(question, state)
-        contextual_parser_input_used = parser_input != question.strip()
+        original_question = question.strip()
+        enriched_question = enrich_question_with_business_context(original_question)
+        business_context_applied = enriched_question != original_question
+
+        follow_up_detected = is_follow_up_question(original_question)
+        parser_input = build_contextual_parser_input(enriched_question, state)
+        contextual_parser_input_used = parser_input != enriched_question
         contextual_parse_fallback_used = False
 
         print_separator("MEMORY DIAGNOSTICS")
         print(f"follow_up_detected: {follow_up_detected}")
         print(f"contextual_parser_input_used: {contextual_parser_input_used}")
+        print(f"business_context_applied: {business_context_applied}")
+        if business_context_applied:
+            print(f"enriched_question: {enriched_question}")
         if state.last_validated_query:
             print(f"previous_intent: {state.last_validated_query.get('intent')}")
         else:
             print("previous_intent: None")
 
-        try:
-            parsed_payload = parse_question_to_json(parser_input)
-        except Exception:
-            if not contextual_parser_input_used:
-                raise
-            parsed_payload = parse_question_to_json(question)
-            contextual_parse_fallback_used = True
+        parse_inputs = [parser_input]
+        if enriched_question != parser_input:
+            parse_inputs.append(enriched_question)
+        if original_question not in parse_inputs:
+            parse_inputs.append(original_question)
+
+        parsed_payload = None
+        last_error: Exception | None = None
+        for idx, candidate_input in enumerate(parse_inputs):
+            try:
+                parsed_payload = parse_question_to_json(candidate_input)
+                if idx > 0:
+                    contextual_parse_fallback_used = True
+                break
+            except Exception as exc:
+                last_error = exc
+
+        if parsed_payload is None:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Parser failed to return payload.")
 
         print(f"contextual_parse_fallback_used: {contextual_parse_fallback_used}")
         print_separator("PARSED PAYLOAD")
@@ -126,16 +148,19 @@ def run_single_test(
         compact_result = compact_execution_result(execution_result, max_rows=preview_rows)
         print_separator("EXECUTION RESULT (COMPACT)")
         print(json.dumps(compact_result, indent=2, ensure_ascii=False, default=str))
+        suggestions = generate_suggestions(validated_query, execution_result)
+        print_separator("SUGGESTIONS")
+        print(json.dumps(suggestions, indent=2, ensure_ascii=False))
 
         final_response = format_response_with_llm(
-            question=question,
+            question=original_question,
             execution_result=execution_result,
             llm_callable=formatter_llm_callable,
         )
         print_separator("FINAL RESPONSE")
         print(final_response)
 
-        state.last_user_question = question
+        state.last_user_question = original_question
         state.last_validated_query = validated_dump
         state.last_execution_result = execution_result
         return True

@@ -10,7 +10,29 @@ function UserBubble({ text, className = "" }) {
   );
 }
 
-function AssistantBubble({ text }) {
+function SuggestionChips({ suggestions, onSuggestionClick, isSubmitting }) {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {suggestions.map((suggestion, index) => (
+        <button
+          key={`${suggestion}-${index}`}
+          type="button"
+          onClick={() => onSuggestionClick(suggestion)}
+          disabled={isSubmitting}
+          className="rounded-full bg-surfaceContainerHigh px-3 py-1.5 text-[13px] font-medium text-onSurface transition hover:bg-surfaceContainerHighest disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {suggestion}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AssistantBubble({ text, suggestions, onSuggestionClick, isSubmitting }) {
   return (
     <div className="max-w-[86%] rounded-chat-ai bg-surfaceContainerLowest px-5 py-4 text-[18px] leading-8 text-onSurface shadow-ambient">
       <div className="mb-3 flex items-center gap-2">
@@ -22,6 +44,11 @@ function AssistantBubble({ text }) {
         </span>
       </div>
       <p>{text}</p>
+      <SuggestionChips
+        suggestions={suggestions}
+        onSuggestionClick={onSuggestionClick}
+        isSubmitting={isSubmitting}
+      />
     </div>
   );
 }
@@ -92,7 +119,13 @@ export function ChatWorkspace({
             message.role === "user" ? (
               <UserBubble key={message.id} className="ml-auto" text={message.text} />
             ) : (
-              <AssistantBubble key={message.id} text={message.text} />
+              <AssistantBubble
+                key={message.id}
+                text={message.text}
+                suggestions={message.suggestions}
+                onSuggestionClick={onSubmitQuestion}
+                isSubmitting={isSubmitting}
+              />
             ),
           )}
           {errorText ? (

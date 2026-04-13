@@ -12,6 +12,14 @@ FOLLOW_UP_MARKERS = (
     "only",
     "now",
     "also",
+    "this metric",
+    "this trend",
+    "this comparison",
+    "these results",
+    "these zones",
+    "those zones",
+    "this zone",
+    "compare these",
 )
 
 

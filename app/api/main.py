@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.services.execution import execute_query
 from app.services.query_parser import parse_question_to_json
 from app.services.query_validator import normalize_parsed_payload, validate_parsed_query
+from src.assistant import enrich_question_with_business_context, generate_suggestions
 from src.conversation import (
     ConversationState,
     build_contextual_parser_input,
@@ -239,18 +240,32 @@ def health(request: Request) -> dict[str, str]:
 def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
     """Run full deterministic line: parse -> normalize -> validate -> execute -> format."""
     request_id = getattr(request.state, "request_id", _new_request_id())
-    question = payload.question.strip()
-    if not question:
+    original_question = payload.question.strip()
+    if not original_question:
         raise HTTPException(status_code=400, detail="question must not be empty.")
-    logger.info("[req:%s][chat.query] question=%s", request_id, _question_preview(question))
+    enriched_question = enrich_question_with_business_context(original_question)
+    business_context_applied = enriched_question != original_question
+    logger.info(
+        "[req:%s][chat.query] question=%s business_context_applied=%s",
+        request_id,
+        _question_preview(original_question),
+        business_context_applied,
+    )
+    if business_context_applied:
+        logger.info(
+            "[req:%s][chat.query] question_enriched_preview=%s",
+            request_id,
+            _question_preview(enriched_question, max_len=140),
+        )
 
     state: ConversationState = getattr(app.state, "conversation_state", ConversationState())
     app.state.conversation_state = state
 
-    follow_up_detected = is_follow_up_question(question)
-    parser_input = build_contextual_parser_input(question, state)
-    contextual_parser_input_used = parser_input != question
+    follow_up_detected = is_follow_up_question(original_question)
+    parser_input = build_contextual_parser_input(enriched_question, state)
+    contextual_parser_input_used = parser_input != enriched_question
     contextual_parse_fallback_used = False
+    parse_input_used = "parser_input"
     logger.info(
         "[req:%s][chat.query] follow_up_detected=%s contextual_parser_input_used=%s",
         request_id,
@@ -263,24 +278,41 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
 
     try:
         t0 = time.perf_counter()
-        try:
-            parsed = parse_question_to_json(parser_input, payload.conversation_context)
-        except Exception:
-            if not contextual_parser_input_used:
-                raise
-            parsed = parse_question_to_json(question, payload.conversation_context)
-            contextual_parse_fallback_used = True
-            logger.warning(
-                "[req:%s][chat.query] contextual parse failed, fallback to raw question",
-                request_id,
-            )
+        parse_inputs = [("parser_input", parser_input)]
+        if enriched_question != parser_input:
+            parse_inputs.append(("enriched_question", enriched_question))
+        if original_question not in {value for _, value in parse_inputs}:
+            parse_inputs.append(("original_question", original_question))
+
+        parsed = None
+        parse_error: Exception | None = None
+        for idx, (source_name, candidate_input) in enumerate(parse_inputs):
+            try:
+                parsed = parse_question_to_json(candidate_input, payload.conversation_context)
+                parse_input_used = source_name
+                if idx > 0:
+                    contextual_parse_fallback_used = True
+                break
+            except Exception as exc:
+                parse_error = exc
+                logger.warning(
+                    "[req:%s][chat.query] parse attempt failed source=%s",
+                    request_id,
+                    source_name,
+                )
+
+        if parsed is None:
+            if parse_error is not None:
+                raise parse_error
+            raise RuntimeError("Parser failed to produce a payload.")
 
         parser_input_preview = parser_input if len(parser_input) <= 300 else f"{parser_input[:300]}..."
         logger.info(
-            "[req:%s][chat.query] parsed_intent=%s metric=%s",
+            "[req:%s][chat.query] parsed_intent=%s metric=%s parse_input_used=%s",
             request_id,
             parsed.get("intent"),
             parsed.get("metric"),
+            parse_input_used,
         )
         steps.append(
             {
@@ -293,6 +325,9 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
                     "follow_up_detected": follow_up_detected,
                     "contextual_parser_input_used": contextual_parser_input_used,
                     "contextual_parse_fallback_used": contextual_parse_fallback_used,
+                    "parse_input_used": parse_input_used,
+                    "business_context_applied": business_context_applied,
+                    "question_enriched_preview": _question_preview(enriched_question, max_len=140),
                     "parser_input_preview": parser_input_preview,
                 },
             }
@@ -300,6 +335,30 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
 
         t1 = time.perf_counter()
         normalized = normalize_parsed_payload(parsed)
+        intent_name = str(normalized.get("intent") or "").strip().lower()
+        metric_value = normalized.get("metric")
+        previous_metric = None
+        if isinstance(state.last_validated_query, dict):
+            previous_metric = state.last_validated_query.get("metric")
+        metric_required_intents = {
+            "top_n_ranking",
+            "group_comparison",
+            "trend_analysis",
+            "aggregation",
+        }
+        if (
+            intent_name in metric_required_intents
+            and (metric_value is None or (isinstance(metric_value, str) and not metric_value.strip()))
+            and isinstance(previous_metric, str)
+            and previous_metric.strip()
+            and (follow_up_detected or contextual_parser_input_used)
+        ):
+            normalized["metric"] = previous_metric.strip()
+            logger.info(
+                "[req:%s][chat.query] normalized metric recovered_from_memory metric=%s",
+                request_id,
+                normalized["metric"],
+            )
         steps.append(
             {
                 "id": "normalize",
@@ -332,11 +391,13 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
         t3 = time.perf_counter()
         execution_result = execute_query(validated, app.state.datasets)
         row_count = len(execution_result.get("rows") or [])
+        suggestions = generate_suggestions(validated, execution_result)
         logger.info(
-            "[req:%s][chat.query] execution_done title=%s row_count=%s",
+            "[req:%s][chat.query] execution_done title=%s row_count=%s suggestions_count=%s",
             request_id,
             execution_result.get("title"),
             row_count,
+            len(suggestions),
         )
         steps.append(
             {
@@ -354,7 +415,7 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
 
         t4 = time.perf_counter()
         answer = format_response_with_llm(
-            question=question,
+            question=original_question,
             execution_result=execution_result,
             llm_callable=app.state.llm_callable,
         )
@@ -373,7 +434,7 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
             }
         )
 
-        state.last_user_question = question
+        state.last_user_question = original_question
         state.last_validated_query = validated_dump
         state.last_execution_result = execution_result
         logger.info(
@@ -384,8 +445,11 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
         )
 
         return {
-            "question": question,
+            "question": original_question,
+            "question_enriched": enriched_question,
+            "business_context_applied": business_context_applied,
             "answer": answer,
+            "suggestions": suggestions,
             "follow_up_detected": follow_up_detected,
             "contextual_parser_input_used": contextual_parser_input_used,
             "contextual_parse_fallback_used": contextual_parse_fallback_used,
@@ -401,7 +465,9 @@ def chat_query(payload: QueryRequest, request: Request) -> dict[str, Any]:
         return JSONResponse(
             status_code=422,
             content={
-                "question": question,
+                "question": original_question,
+                "question_enriched": enriched_question,
+                "business_context_applied": business_context_applied,
                 "error": str(exc),
                 "pipeline": steps,
                 "total_duration_s": round(time.perf_counter() - started, 3),
