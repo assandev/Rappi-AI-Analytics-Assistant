@@ -72,6 +72,20 @@ def normalize_parsed_payload(payload: dict) -> dict:
 
     elif intent == "aggregation":
         params.setdefault("aggregation", "mean")
+        group_by = payload.get("group_by")
+        if isinstance(filters, dict) and isinstance(group_by, str):
+            current_group_filter = filters.get(group_by)
+            if current_group_filter is not None:
+                next_group_by = {
+                    "country": "city",
+                    "city": "zone",
+                    "zone": "zone_type",
+                    "zone_type": "zone_prioritization",
+                }.get(group_by)
+                if next_group_by:
+                    payload["group_by"] = next_group_by
+                else:
+                    filters[group_by] = None
 
     elif intent == "multivariable_filter":
         params.setdefault("logical_operator", "and")

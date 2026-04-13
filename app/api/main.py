@@ -19,6 +19,11 @@ from pydantic import BaseModel, Field
 from app.services.execution import execute_query
 from app.services.query_parser import parse_question_to_json
 from app.services.query_validator import normalize_parsed_payload, validate_parsed_query
+from src.conversation import (
+    ConversationState,
+    build_contextual_parser_input,
+    is_follow_up_question,
+)
 from src.insights.service import (
     DEFAULT_REPORT_PATH,
     generate_and_save_insights_report,
@@ -118,6 +123,7 @@ def startup_event() -> None:
     """Warm-load datasets and LLM callable once."""
     app.state.datasets = _load_datasets()
     app.state.llm_callable = _build_formatter_llm_callable()
+    app.state.conversation_state = ConversationState()
 
 
 @app.get("/api/health")
@@ -133,19 +139,41 @@ def chat_query(payload: QueryRequest) -> dict[str, Any]:
     if not question:
         raise HTTPException(status_code=400, detail="question must not be empty.")
 
+    state: ConversationState = getattr(app.state, "conversation_state", ConversationState())
+    app.state.conversation_state = state
+
+    follow_up_detected = is_follow_up_question(question)
+    parser_input = build_contextual_parser_input(question, state)
+    contextual_parser_input_used = parser_input != question
+    contextual_parse_fallback_used = False
+
     steps: list[dict[str, Any]] = []
     started = time.perf_counter()
 
     try:
         t0 = time.perf_counter()
-        parsed = parse_question_to_json(question, payload.conversation_context)
+        try:
+            parsed = parse_question_to_json(parser_input, payload.conversation_context)
+        except Exception:
+            if not contextual_parser_input_used:
+                raise
+            parsed = parse_question_to_json(question, payload.conversation_context)
+            contextual_parse_fallback_used = True
+
+        parser_input_preview = parser_input if len(parser_input) <= 300 else f"{parser_input[:300]}..."
         steps.append(
             {
                 "id": "parse",
                 "title": "Parse Question",
                 "status": "completed",
                 "duration_s": round(time.perf_counter() - t0, 3),
-                "detail": parsed,
+                "detail": {
+                    "parsed_payload": parsed,
+                    "follow_up_detected": follow_up_detected,
+                    "contextual_parser_input_used": contextual_parser_input_used,
+                    "contextual_parse_fallback_used": contextual_parse_fallback_used,
+                    "parser_input_preview": parser_input_preview,
+                },
             }
         )
 
@@ -162,7 +190,7 @@ def chat_query(payload: QueryRequest) -> dict[str, Any]:
         )
 
         t2 = time.perf_counter()
-        validated = validate_parsed_query(parsed)
+        validated = validate_parsed_query(normalized)
         validated_dump = validated.model_dump(mode="json")
         steps.append(
             {
@@ -206,9 +234,16 @@ def chat_query(payload: QueryRequest) -> dict[str, Any]:
             }
         )
 
+        state.last_user_question = question
+        state.last_validated_query = validated_dump
+        state.last_execution_result = execution_result
+
         return {
             "question": question,
             "answer": answer,
+            "follow_up_detected": follow_up_detected,
+            "contextual_parser_input_used": contextual_parser_input_used,
+            "contextual_parse_fallback_used": contextual_parse_fallback_used,
             "parsed_payload": parsed,
             "normalized_payload": normalized,
             "validated_query": validated_dump,

@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.services.execution import execute_query
 from app.services.query_parser import parse_question_to_json
 from app.services.query_validator import validate_parsed_query
+from src.conversation import ConversationState, build_contextual_parser_input, is_follow_up_question
 from src.response.response_formatter import compact_execution_result, format_response_with_llm
 
 
@@ -80,6 +81,7 @@ def _build_formatter_llm_callable() -> Callable[..., str]:
 def run_single_test(
     question: str,
     datasets: dict[str, pd.DataFrame],
+    state: ConversationState,
     formatter_llm_callable: Callable[..., str],
     preview_rows: int,
 ) -> bool:
@@ -88,13 +90,37 @@ def run_single_test(
     print(question)
 
     try:
-        parsed_payload = parse_question_to_json(question)
+        follow_up_detected = is_follow_up_question(question)
+        parser_input = build_contextual_parser_input(question, state)
+        contextual_parser_input_used = parser_input != question.strip()
+        contextual_parse_fallback_used = False
+
+        print_separator("MEMORY DIAGNOSTICS")
+        print(f"follow_up_detected: {follow_up_detected}")
+        print(f"contextual_parser_input_used: {contextual_parser_input_used}")
+        if state.last_validated_query:
+            print(f"previous_intent: {state.last_validated_query.get('intent')}")
+        else:
+            print("previous_intent: None")
+
+        try:
+            parsed_payload = parse_question_to_json(parser_input)
+        except Exception:
+            if not contextual_parser_input_used:
+                raise
+            parsed_payload = parse_question_to_json(question)
+            contextual_parse_fallback_used = True
+
+        print(f"contextual_parse_fallback_used: {contextual_parse_fallback_used}")
         print_separator("PARSED PAYLOAD")
         print(json.dumps(parsed_payload, indent=2, ensure_ascii=False))
 
         validated_query = validate_parsed_query(parsed_payload)
+        validated_dump = validated_query.model_dump(mode="json")
         print_separator("VALIDATED QUERY MODEL")
         print(type(validated_query).__name__)
+        print_separator("VALIDATED QUERY PAYLOAD")
+        print(json.dumps(validated_dump, indent=2, ensure_ascii=False, default=str))
 
         execution_result = execute_query(validated_query, datasets)
         compact_result = compact_execution_result(execution_result, max_rows=preview_rows)
@@ -108,6 +134,10 @@ def run_single_test(
         )
         print_separator("FINAL RESPONSE")
         print(final_response)
+
+        state.last_user_question = question
+        state.last_validated_query = validated_dump
+        state.last_execution_result = execution_result
         return True
     except Exception as exc:
         print_separator("ERROR")
@@ -144,13 +174,14 @@ def main() -> None:
     print_separator("DIRECT LINE TEST START")
     datasets = load_datasets()
     formatter_llm_callable = _build_formatter_llm_callable()
+    state = ConversationState()
 
     passed = 0
     failed = 0
 
     for idx, question in enumerate(questions, start=1):
         print_separator(f"TEST CASE {idx}")
-        if run_single_test(question, datasets, formatter_llm_callable, args.preview_rows):
+        if run_single_test(question, datasets, state, formatter_llm_callable, args.preview_rows):
             passed += 1
         else:
             failed += 1
@@ -163,4 +194,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

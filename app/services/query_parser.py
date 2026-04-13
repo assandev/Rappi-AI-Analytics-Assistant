@@ -53,6 +53,10 @@ def build_system_prompt() -> str:
         "Do not return explanations.\n"
         "Do not return comments.\n"
         "Do not invent fields that are not explicitly allowed.\n\n"
+        "Follow-up handling rule:\n"
+        "- Some inputs include 'Previous validated query' and 'New user follow-up'.\n"
+        "- In those cases, preserve previous context unless the follow-up clearly changes it.\n"
+        "- Override only fields explicitly changed by the follow-up text.\n\n"
 
         "Supported intents (choose exactly one):\n"
         "- top_n_ranking\n"
