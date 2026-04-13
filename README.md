@@ -25,6 +25,18 @@ This system turns questions into structured analytics queries, computes answers 
 ### Insights Engine
 `Data -> Deterministic Detectors -> Curation Layer -> Report Generator (LLM) -> Markdown Report`
 
+## Product screenshots
+To keep these visuals versioned in the repo, place the image files in `docs/screenshots/` using the exact names below.
+
+### 1) Workspace and conversational analytics
+![Workspace and conversational analytics](docs/screenshots/workspace-chat.png)
+
+### 2) Trend analysis response with follow-up suggestions
+![Trend analysis response and follow-up chips](docs/screenshots/trend-analysis-response.png)
+
+### 3) Executive insights report generator output
+![Executive insights report generator output](docs/screenshots/insights-generator-report.png)
+
 ## Design philosophy
 > **LLMs interpret. Deterministic systems compute.**
 
