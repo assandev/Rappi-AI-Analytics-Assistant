@@ -19,7 +19,11 @@ from pydantic import BaseModel, Field
 from app.services.execution import execute_query
 from app.services.query_parser import parse_question_to_json
 from app.services.query_validator import normalize_parsed_payload, validate_parsed_query
-from src.insights.service import DEFAULT_REPORT_PATH, generate_and_save_insights_report
+from src.insights.service import (
+    DEFAULT_REPORT_PATH,
+    generate_and_save_insights_report,
+    send_insights_report_email,
+)
 from src.response.response_formatter import format_response_with_llm
 
 
@@ -42,6 +46,12 @@ class InsightsReportRequest(BaseModel):
 
     top_k_critical: int = Field(default=5, ge=3, le=5)
     force_fallback: bool = False
+
+
+class InsightsReportEmailRequest(BaseModel):
+    """HTTP input payload for sending report by email."""
+
+    recipient_email: str = Field(min_length=3)
 
 
 def _build_formatter_llm_callable() -> Callable[..., str]:
@@ -255,6 +265,28 @@ def download_insights_report() -> FileResponse:
         media_type="text/markdown",
         filename="insights_report.md",
     )
+
+
+@app.post("/api/insights/report/email")
+def email_insights_report(payload: InsightsReportEmailRequest) -> dict[str, Any]:
+    """Send latest insights report to recipient with fixed subject and body."""
+    started = time.perf_counter()
+    try:
+        result = send_insights_report_email(
+            recipient_email=payload.recipient_email,
+            report_path=DEFAULT_REPORT_PATH,
+        )
+        return {
+            "message": "Insights report email sent successfully.",
+            "recipient_email": result["recipient_email"],
+            "subject": result["subject"],
+            "attachment_name": result["attachment_name"],
+            "duration_s": round(time.perf_counter() - started, 3),
+        }
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 if FRONTEND_DIST.exists():

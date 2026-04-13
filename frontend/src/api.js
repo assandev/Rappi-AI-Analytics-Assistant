@@ -30,3 +30,16 @@ export async function generateInsightsReport(payload = {}) {
 export function getInsightsReportDownloadUrl() {
   return `${API_BASE}/api/insights/report/download`;
 }
+
+export async function sendInsightsReportEmail(recipientEmail) {
+  const response = await fetch(`${API_BASE}/api/insights/report/email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient_email: recipientEmail }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body?.detail || body?.error || "Failed to send insights report email.");
+  }
+  return body;
+}

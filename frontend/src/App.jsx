@@ -3,7 +3,12 @@ import { TopBar } from "./components/TopBar";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { InsightsReportModal } from "./components/InsightsReportModal";
-import { generateInsightsReport, getInsightsReportDownloadUrl, runChatQuery } from "./api";
+import {
+  generateInsightsReport,
+  getInsightsReportDownloadUrl,
+  runChatQuery,
+  sendInsightsReportEmail,
+} from "./api";
 
 const DEFAULT_PIPELINE = [
   { id: "parse", title: "Parse Question", status: "not_started", duration_s: null, detail: null },
@@ -48,8 +53,10 @@ export default function App() {
   const [pipelineSteps, setPipelineSteps] = useState(DEFAULT_PIPELINE);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [isSendingInsightsEmail, setIsSendingInsightsEmail] = useState(false);
   const [insightsReport, setInsightsReport] = useState(null);
   const [isInsightsModalOpen, setIsInsightsModalOpen] = useState(false);
+  const [insightsEmailStatus, setInsightsEmailStatus] = useState("");
   const [errorText, setErrorText] = useState("");
 
   const systemStatus = useMemo(
@@ -110,6 +117,7 @@ export default function App() {
 
   const handleGenerateInsights = async () => {
     setErrorText("");
+    setInsightsEmailStatus("");
     setIsGeneratingInsights(true);
     try {
       const result = await generateInsightsReport({ top_k_critical: 5, force_fallback: false });
@@ -123,7 +131,32 @@ export default function App() {
     }
   };
 
-  const closeInsightsModal = () => setIsInsightsModalOpen(false);
+  const closeInsightsModal = () => {
+    setIsInsightsModalOpen(false);
+    setInsightsEmailStatus("");
+  };
+
+  const handleSendInsightsEmail = async (recipientEmail) => {
+    if (!insightsReport) {
+      return;
+    }
+    if (!recipientEmail || !recipientEmail.trim()) {
+      setInsightsEmailStatus("Please enter a recipient email.");
+      return;
+    }
+
+    setInsightsEmailStatus("");
+    setIsSendingInsightsEmail(true);
+    try {
+      const result = await sendInsightsReportEmail(recipientEmail.trim());
+      setInsightsEmailStatus(`Email sent to ${result.recipient_email}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to send report email.";
+      setInsightsEmailStatus(message);
+    } finally {
+      setIsSendingInsightsEmail(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-surface text-onSurface">
@@ -149,6 +182,9 @@ export default function App() {
         report={insightsReport}
         onClose={closeInsightsModal}
         downloadUrl={getInsightsReportDownloadUrl()}
+        onSendEmail={handleSendInsightsEmail}
+        isSendingEmail={isSendingInsightsEmail}
+        emailStatus={insightsEmailStatus}
       />
     </div>
   );

@@ -1,7 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-export function InsightsReportModal({ open, report, onClose, downloadUrl }) {
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function InsightsReportModal({
+  open,
+  report,
+  onClose,
+  downloadUrl,
+  onSendEmail,
+  isSendingEmail,
+  emailStatus,
+}) {
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
+
   useEffect(() => {
     if (!open) {
       return undefined;
@@ -15,9 +28,22 @@ export function InsightsReportModal({ open, report, onClose, downloadUrl }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setRecipientEmail("");
+    setEmailTouched(false);
+  }, [open]);
+
   if (!open || !report) {
     return null;
   }
+
+  const normalizedEmail = recipientEmail.trim();
+  const isEmailValid = EMAIL_REGEX.test(normalizedEmail);
+  const showEmailError = emailTouched && !isEmailValid;
+  const canSendEmail = !isSendingEmail && isEmailValid;
 
   return (
     <div
@@ -57,6 +83,45 @@ export function InsightsReportModal({ open, report, onClose, downloadUrl }) {
         </header>
 
         <div className="max-h-[calc(88vh-92px)] overflow-y-auto px-6 pb-6">
+          <div className="mb-4 grid grid-cols-1 gap-2 rounded-2xl bg-surfaceContainerLow p-3 md:grid-cols-[1fr_auto]">
+            <input
+              type="email"
+              value={recipientEmail}
+              onChange={(event) => setRecipientEmail(event.target.value)}
+              onBlur={() => setEmailTouched(true)}
+              placeholder="Recipient email"
+              className={`h-10 rounded-xl bg-surfaceContainerLowest px-3 text-sm text-onSurface outline-none ${
+                showEmailError ? "ring-2 ring-primary" : "ring-1 ring-transparent"
+              }`}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setEmailTouched(true);
+                if (!isEmailValid) {
+                  return;
+                }
+                onSendEmail(normalizedEmail);
+              }}
+              disabled={!canSendEmail}
+              className="inline-flex h-10 items-center justify-center rounded-xl bg-surfaceContainerHigh px-4 font-heading text-sm font-bold text-onSurface disabled:opacity-60"
+            >
+              {isSendingEmail ? "Sending..." : "Send by Email"}
+            </button>
+          </div>
+          {showEmailError ? (
+            <p className="mb-4 text-sm text-primary">
+              {normalizedEmail.length === 0
+                ? "Recipient email is required."
+                : "Please enter a valid email address."}
+            </p>
+          ) : null}
+
+          {emailStatus ? (
+            <div className="mb-4 rounded-xl bg-surfaceContainerHigh px-3 py-2 text-sm text-onSurface">
+              {emailStatus}
+            </div>
+          ) : null}
           <article className="space-y-3 text-[15px] leading-7 text-onSurface">
             <ReactMarkdown
               components={{
